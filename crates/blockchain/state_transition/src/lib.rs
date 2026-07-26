@@ -1,3 +1,7 @@
+// On the zkVM guest (`target_os = "zkvm"`) `info!`/`warn!` become no-ops, so
+// imports and bindings that only feed them go unused — silence those there.
+#![cfg_attr(target_os = "zkvm", allow(unused_imports, unused_variables))]
+
 use std::collections::HashMap;
 
 use ethlambda_types::{
@@ -8,7 +12,20 @@ use ethlambda_types::{
     primitives::{H256, HashTreeRoot as _},
     state::{HISTORICAL_ROOTS_LIMIT, JustificationValidators, State},
 };
+#[cfg(not(target_os = "zkvm"))]
 use tracing::{info, warn};
+
+
+// for the zkVM guest, tracing is not compiled in, so set the macros to no-ops.
+// `info!`/`warn!` call sites stay unchanged. Defined before first use.
+#[cfg(target_os = "zkvm")]
+macro_rules! info {
+    ($($t:tt)*) => {{}};
+}
+#[cfg(target_os = "zkvm")]
+macro_rules! warn {
+    ($($t:tt)*) => {{}};
+}
 
 pub mod justified_slots_ops;
 pub mod metrics;
