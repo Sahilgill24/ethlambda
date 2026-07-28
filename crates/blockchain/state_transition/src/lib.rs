@@ -15,7 +15,6 @@ use ethlambda_types::{
 #[cfg(not(target_os = "zkvm"))]
 use tracing::{info, warn};
 
-
 // for the zkVM guest, tracing is not compiled in, so set the macros to no-ops.
 // `info!`/`warn!` call sites stay unchanged. Defined before first use.
 #[cfg(target_os = "zkvm")]
@@ -28,6 +27,14 @@ macro_rules! warn {
 }
 
 pub mod justified_slots_ops;
+
+// `metrics` is prometheus-backed on the host, but the zkVM guest
+// (`target_os = "zkvm"`) has no prometheus, so there it is swapped for a no-op
+// stub with identical signatures. Call sites are the same in both builds.
+#[cfg(not(target_os = "zkvm"))]
+pub mod metrics;
+#[cfg(target_os = "zkvm")]
+#[path = "metrics_noop.rs"]
 pub mod metrics;
 
 #[derive(Debug, thiserror::Error)]

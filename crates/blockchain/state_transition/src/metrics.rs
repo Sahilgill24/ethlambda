@@ -1,20 +1,10 @@
 //! Prometheus metrics for state transition.
-//!
-//! Gated on the target: on the zkVM guest (`target_os = "zkvm"`) the statics
-//! are dropped and each function's body becomes a no-op, so the call sites in
-//! `lib.rs` never change.
 
-#[cfg(not(target_os = "zkvm"))]
 use std::sync::LazyLock;
 
-#[cfg(not(target_os = "zkvm"))]
+pub use ethlambda_metrics::TimingGuard;
 use ethlambda_metrics::*;
 
-/// No-op version of the struct imported from ethlambda_metrics for the zkVM guest. 
-#[cfg(target_os = "zkvm")]
-pub struct TimingGuard;
-
-#[cfg(not(target_os = "zkvm"))]
 static LEAN_STATE_TRANSITION_SLOTS_PROCESSED_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     register_int_counter!(
         "lean_state_transition_slots_processed_total",
@@ -23,7 +13,6 @@ static LEAN_STATE_TRANSITION_SLOTS_PROCESSED_TOTAL: LazyLock<IntCounter> = LazyL
     .unwrap()
 });
 
-#[cfg(not(target_os = "zkvm"))]
 static LEAN_STATE_TRANSITION_ATTESTATIONS_PROCESSED_TOTAL: LazyLock<IntCounter> =
     LazyLock::new(|| {
         register_int_counter!(
@@ -33,7 +22,6 @@ static LEAN_STATE_TRANSITION_ATTESTATIONS_PROCESSED_TOTAL: LazyLock<IntCounter> 
         .unwrap()
     });
 
-#[cfg(not(target_os = "zkvm"))]
 static LEAN_FINALIZATIONS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "lean_finalizations_total",
@@ -43,31 +31,6 @@ static LEAN_FINALIZATIONS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// Increment the slots processed counter by the given amount.
-pub fn inc_slots_processed(count: u64) {
-    #[cfg(not(target_os = "zkvm"))]
-    LEAN_STATE_TRANSITION_SLOTS_PROCESSED_TOTAL.inc_by(count);
-    #[cfg(target_os = "zkvm")]
-    let _ = count;
-}
-
-/// Increment the attestations processed counter by the given amount.
-pub fn inc_attestations_processed(count: u64) {
-    #[cfg(not(target_os = "zkvm"))]
-    LEAN_STATE_TRANSITION_ATTESTATIONS_PROCESSED_TOTAL.inc_by(count);
-    #[cfg(target_os = "zkvm")]
-    let _ = count;
-}
-
-/// Increment the finalization counter with the given result.
-pub fn inc_finalizations(result: &str) {
-    #[cfg(not(target_os = "zkvm"))]
-    LEAN_FINALIZATIONS_TOTAL.with_label_values(&[result]).inc();
-    #[cfg(target_os = "zkvm")]
-    let _ = result;
-}
-
-#[cfg(not(target_os = "zkvm"))]
 static LEAN_STATE_TRANSITION_TIME_SECONDS: LazyLock<Histogram> = LazyLock::new(|| {
     register_histogram!(
         "lean_state_transition_time_seconds",
@@ -77,7 +40,6 @@ static LEAN_STATE_TRANSITION_TIME_SECONDS: LazyLock<Histogram> = LazyLock::new(|
     .unwrap()
 });
 
-#[cfg(not(target_os = "zkvm"))]
 static LEAN_STATE_TRANSITION_SLOTS_PROCESSING_TIME_SECONDS: LazyLock<Histogram> =
     LazyLock::new(|| {
         register_histogram!(
@@ -88,7 +50,6 @@ static LEAN_STATE_TRANSITION_SLOTS_PROCESSING_TIME_SECONDS: LazyLock<Histogram> 
         .unwrap()
     });
 
-#[cfg(not(target_os = "zkvm"))]
 static LEAN_STATE_TRANSITION_BLOCK_PROCESSING_TIME_SECONDS: LazyLock<Histogram> =
     LazyLock::new(|| {
         register_histogram!(
@@ -99,7 +60,6 @@ static LEAN_STATE_TRANSITION_BLOCK_PROCESSING_TIME_SECONDS: LazyLock<Histogram> 
         .unwrap()
     });
 
-#[cfg(not(target_os = "zkvm"))]
 static LEAN_STATE_TRANSITION_ATTESTATIONS_PROCESSING_TIME_SECONDS: LazyLock<Histogram> =
     LazyLock::new(|| {
         register_histogram!(
@@ -110,38 +70,37 @@ static LEAN_STATE_TRANSITION_ATTESTATIONS_PROCESSING_TIME_SECONDS: LazyLock<Hist
         .unwrap()
     });
 
+/// Increment the slots processed counter by the given amount.
+pub fn inc_slots_processed(count: u64) {
+    LEAN_STATE_TRANSITION_SLOTS_PROCESSED_TOTAL.inc_by(count);
+}
+
+/// Increment the attestations processed counter by the given amount.
+pub fn inc_attestations_processed(count: u64) {
+    LEAN_STATE_TRANSITION_ATTESTATIONS_PROCESSED_TOTAL.inc_by(count);
+}
+
+/// Increment the finalization counter with the given result.
+pub fn inc_finalizations(result: &str) {
+    LEAN_FINALIZATIONS_TOTAL.with_label_values(&[result]).inc();
+}
+
 /// Start timing state transition. Records duration when the guard is dropped.
 pub fn time_state_transition() -> TimingGuard {
-    #[cfg(not(target_os = "zkvm"))]
-    let guard = TimingGuard::new(&LEAN_STATE_TRANSITION_TIME_SECONDS);
-    #[cfg(target_os = "zkvm")]
-    let guard = TimingGuard;
-    guard
+    TimingGuard::new(&LEAN_STATE_TRANSITION_TIME_SECONDS)
 }
 
 /// Start timing slots processing. Records duration when the guard is dropped.
 pub fn time_slots_processing() -> TimingGuard {
-    #[cfg(not(target_os = "zkvm"))]
-    let guard = TimingGuard::new(&LEAN_STATE_TRANSITION_SLOTS_PROCESSING_TIME_SECONDS);
-    #[cfg(target_os = "zkvm")]
-    let guard = TimingGuard;
-    guard
+    TimingGuard::new(&LEAN_STATE_TRANSITION_SLOTS_PROCESSING_TIME_SECONDS)
 }
 
 /// Start timing block processing. Records duration when the guard is dropped.
 pub fn time_block_processing() -> TimingGuard {
-    #[cfg(not(target_os = "zkvm"))]
-    let guard = TimingGuard::new(&LEAN_STATE_TRANSITION_BLOCK_PROCESSING_TIME_SECONDS);
-    #[cfg(target_os = "zkvm")]
-    let guard = TimingGuard;
-    guard
+    TimingGuard::new(&LEAN_STATE_TRANSITION_BLOCK_PROCESSING_TIME_SECONDS)
 }
 
 /// Start timing attestations processing. Records duration when the guard is dropped.
 pub fn time_attestations_processing() -> TimingGuard {
-    #[cfg(not(target_os = "zkvm"))]
-    let guard = TimingGuard::new(&LEAN_STATE_TRANSITION_ATTESTATIONS_PROCESSING_TIME_SECONDS);
-    #[cfg(target_os = "zkvm")]
-    let guard = TimingGuard;
-    guard
+    TimingGuard::new(&LEAN_STATE_TRANSITION_ATTESTATIONS_PROCESSING_TIME_SECONDS)
 }
