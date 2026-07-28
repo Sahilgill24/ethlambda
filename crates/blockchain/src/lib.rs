@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime};
 
+use ethlambda_crypto::signature::{ValidatorPubkeys, ValidatorPublicKey, ValidatorSignature};
 use ethlambda_network_api::{BlockChainToP2PRef, InitP2P};
 use ethlambda_state_transition::is_proposer;
 use ethlambda_storage::{ALL_TABLES, Store};
@@ -10,7 +11,6 @@ use ethlambda_types::{
     attestation::{SignedAggregatedAttestation, SignedAttestation},
     block::{ByteList512KiB, MultiMessageAggregate, SignedBlock},
     primitives::{H256, HashTreeRoot as _},
-    signature::{ValidatorPublicKey, ValidatorSignature},
 };
 
 use crate::aggregation::{

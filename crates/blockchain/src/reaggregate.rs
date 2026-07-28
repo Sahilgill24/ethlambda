@@ -24,6 +24,7 @@
 
 use std::collections::HashSet;
 
+use ethlambda_crypto::signature::{ValidatorPubkeys, ValidatorPublicKey};
 use ethlambda_storage::Store;
 use ethlambda_types::{
     attestation::{
@@ -32,7 +33,6 @@ use ethlambda_types::{
     },
     block::{SignedBlock, SingleMessageAggregate},
     primitives::{H256, HashTreeRoot as _},
-    signature::ValidatorPublicKey,
 };
 use tracing::{debug, warn};
 

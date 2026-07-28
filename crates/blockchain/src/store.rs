@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use ethlambda_crypto::signature::{ValidatorPubkeys, ValidatorPublicKey, ValidatorSignature};
 use ethlambda_state_transition::{is_proposer, slot_is_justifiable_after};
 use ethlambda_storage::{ForkCheckpoints, Store};
 use ethlambda_types::{
@@ -11,7 +12,6 @@ use ethlambda_types::{
     block::{Block, BlockHeader, SignedBlock, SingleMessageAggregate},
     checkpoint::Checkpoint,
     primitives::{H256, HashTreeRoot as _},
-    signature::{ValidatorPublicKey, ValidatorSignature},
     state::{HISTORICAL_ROOTS_LIMIT, State},
 };
 use tracing::{info, trace, warn};

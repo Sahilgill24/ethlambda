@@ -20,13 +20,13 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime};
 
 use ethlambda_crypto::aggregate_mixed;
+use ethlambda_crypto::signature::{ValidatorPubkeys, ValidatorPublicKey, ValidatorSignature};
 use ethlambda_storage::Store;
 use ethlambda_types::{
     ShortRoot,
     attestation::{AggregationBits, AttestationData, HashedAttestationData},
     block::{ByteList512KiB, SingleMessageAggregate},
     primitives::H256,
-    signature::{ValidatorPublicKey, ValidatorSignature},
     state::Validator,
 };
 use spawned_concurrency::message::Message;
@@ -796,7 +796,7 @@ mod tests {
     /// never checks signature validity, only that it clones and carries a
     /// resolvable id — mirrors `ethlambda_storage::store::tests::make_dummy_sig`.
     fn dummy_sig() -> ValidatorSignature {
-        use ethlambda_types::signature::LeanSignatureScheme;
+        use ethlambda_crypto::signature::LeanSignatureScheme;
         use leansig::{serialization::Serializable, signature::SignatureScheme};
         use rand::{SeedableRng, rngs::StdRng};
 

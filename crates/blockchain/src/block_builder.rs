@@ -15,7 +15,7 @@ use std::{
     time::Instant,
 };
 
-use ethlambda_crypto::aggregate_proofs;
+use ethlambda_crypto::{aggregate_proofs, signature::ValidatorPubkeys};
 use ethlambda_state_transition::{
     attestation_data_matches_chain, justified_slots_ops, process_block, process_slots,
     slot_is_justifiable_after,
