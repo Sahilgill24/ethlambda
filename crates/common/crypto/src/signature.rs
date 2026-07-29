@@ -3,7 +3,7 @@
 
 use std::ops::Range;
 
-use ethlambda_types::{primitives::H256, state::Validator};
+use ethlambda_types::primitives::H256;
 use leansig::{
     serialization::Serializable,
     signature::{SignatureScheme, SignatureSchemeSecretKey as _, SigningError},
@@ -119,26 +119,6 @@ impl ValidatorSecretKey {
     /// this is a no-op.
     pub fn advance_preparation(&mut self) {
         self.inner.advance_preparation();
-    }
-}
-
-/// Leansig-backed public-key access for [`Validator`].
-///
-/// `Validator` lives in `ethlambda-types`, which stays leansig-free, so these
-/// helpers can't be inherent methods there. Import this trait to call
-/// `validator.get_attestation_pubkey()` / `get_proposal_pubkey()` as before.
-pub trait ValidatorPubkeys {
-    fn get_attestation_pubkey(&self) -> Result<ValidatorPublicKey, SignatureParseError>;
-    fn get_proposal_pubkey(&self) -> Result<ValidatorPublicKey, SignatureParseError>;
-}
-
-impl ValidatorPubkeys for Validator {
-    fn get_attestation_pubkey(&self) -> Result<ValidatorPublicKey, SignatureParseError> {
-        ValidatorPublicKey::from_bytes(&self.attestation_pubkey)
-    }
-
-    fn get_proposal_pubkey(&self) -> Result<ValidatorPublicKey, SignatureParseError> {
-        ValidatorPublicKey::from_bytes(&self.proposal_pubkey)
     }
 }
 
