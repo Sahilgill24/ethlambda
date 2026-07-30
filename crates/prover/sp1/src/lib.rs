@@ -1,11 +1,10 @@
 use ethlambda_prover_core::{Proof, ProverError, StfInput, StfProver, StfPublicValues};
 use sp1_sdk::{
-    MockProver, Prover, SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin, SP1VerifyingKey,
-    include_elf,
+    Elf, MockProver, ProveRequest, Prover, ProvingKey, SP1ProofWithPublicValues, SP1ProvingKey,
+    SP1Stdin, SP1VerifyingKey, include_elf,
 };
 
-
-const STATE_TRANSITION_ELF: &[u8] = include_elf!("zkvm_guest_sp1");
+const STATE_TRANSITION_ELF: Elf = include_elf!("zkvm_guest_sp1");
 const CYCLE_LIMIT: u64 = 10_000_000;
 
 /// SP1 prover: proves the STF guest and verifies its proofs.
@@ -25,7 +24,13 @@ impl Sp1Prover {
     pub async fn new() -> Self {
         let client = MockProver::new().await;
         // let client = ProverClient::builder().cpu().await;
-        let (pk, vk) = client.setup(STATE_TRANSITION_ELF).await;
+        // `setup` returns only the proving key (fallible); the verifying key is
+        // derived from it.
+        let pk = client
+            .setup(STATE_TRANSITION_ELF)
+            .await
+            .expect("failed to set up SP1 proving key");
+        let vk = pk.verifying_key().clone();
         Self { client, pk, vk }
     }
 }
@@ -56,12 +61,29 @@ impl StfProver for Sp1Prover {
         let mut sp1_proof: SP1ProofWithPublicValues = bincode::deserialize(proof.as_bytes())
             .map_err(|err| ProverError::Serialization(err.to_string()))?;
 
+        // `verify` is synchronous in this SDK and takes an optional status code.
         self.client
-            .verify(&sp1_proof, &self.vk)
-            .await
+            .verify(&sp1_proof, &self.vk, None)
             .map_err(|err| ProverError::Verify(err.to_string()))?;
 
         // The guest committed `StfPublicValues` via `io::commit`; read it back.
         Ok(sp1_proof.public_values.read::<StfPublicValues>())
+    }
+
+    async fn execute(&self, input: &StfInput) -> Result<StfPublicValues, ProverError> {
+        let mut stdin = SP1Stdin::new();
+        stdin.write(input);
+
+        // Runs the guest in the SP1 executor without proving; the future yields
+        // `(SP1PublicValues, ExecutionReport)`. We ignore the report for now.
+        let (mut public_values, _report) = self
+            .client
+            .execute(STATE_TRANSITION_ELF, stdin)
+            .cycle_limit(CYCLE_LIMIT)
+            .await
+            .map_err(|err| ProverError::Execute(err.to_string()))?;
+
+        // The guest committed `StfPublicValues` via `io::commit`; read it back.
+        Ok(public_values.read::<StfPublicValues>())
     }
 }

@@ -38,6 +38,9 @@ pub trait StfProver {
 
     /// Verify a proof and return the public values it commits to.
     async fn verify(&self, proof: &Proof) -> Result<StfPublicValues, ProverError>;
+
+    /// Execute the guest program, without generating the proof.
+    async fn execute(&self, input: &StfInput) -> Result<StfPublicValues, ProverError>;
 }
 
 /// Errors raised while proving or verifying a state transition.
@@ -52,4 +55,7 @@ pub enum ProverError {
     /// A proof or its public values could not be (de)serialized.
     #[error("proof (de)serialization failed: {0}")]
     Serialization(String),
+    /// The execution of the guest program failed.
+    #[error("execution failed: {0}")]
+    Execute(String),
 }
