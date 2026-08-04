@@ -11,7 +11,7 @@ const CYCLE_LIMIT: u64 = 10_000_000;
 ///
 /// The proving/verifying keys are derived once via [`Sp1Prover::new`] because
 /// `setup` is expensive and must not run per proof.
-/// [TODO!]: check if using Lazylock might be better 
+/// [TODO!]: check if using Lazylock might be better
 pub struct Sp1Prover {
     client: MockProver,
     pk: SP1ProvingKey,
@@ -20,7 +20,7 @@ pub struct Sp1Prover {
 
 impl Sp1Prover {
     /// Build the prover once, caching the proving/verifying keys and
-    /// currently uses the MockProver. 
+    /// currently uses the MockProver.
     pub async fn new() -> Self {
         let client = MockProver::new().await;
         // let client = ProverClient::builder().cpu().await;
@@ -37,7 +37,6 @@ impl Sp1Prover {
 
 impl StfProver for Sp1Prover {
     async fn prove(&self, input: &StfInput) -> Result<Proof, ProverError> {
-
         let mut stdin = SP1Stdin::new();
         stdin.write(input);
 
@@ -52,8 +51,8 @@ impl StfProver for Sp1Prover {
 
         // Store the whole proof (including public values) so `verify` can
         // recover the committed `StfPublicValues`.
-        let bytes =
-            bincode::serialize(&proof).map_err(|err| ProverError::Serialization(err.to_string()))?;
+        let bytes = bincode::serialize(&proof)
+            .map_err(|err| ProverError::Serialization(err.to_string()))?;
         Ok(Proof(bytes))
     }
 
