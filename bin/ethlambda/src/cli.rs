@@ -1,13 +1,11 @@
 //! Command-line interface for the ethlambda binary.
 
+use ethlambda_p2p::discovery::DEFAULT_DISCOVERY_TARGET_PEERS;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use crate::version;
-
-#[derive(Debug, clap::Parser)]
-#[command(name = "ethlambda", author = "LambdaClass", version = version::CLIENT_VERSION, about = "ethlambda consensus client")]
-pub(crate) struct CliOptions {
+#[derive(Debug, clap::Args)]
+pub(crate) struct NodeOptions {
     /// Path to the chain genesis config (e.g., config.yaml).
     #[arg(long)]
     pub(crate) genesis: PathBuf,
@@ -23,7 +21,11 @@ pub(crate) struct CliOptions {
     /// Directory containing per-validator XMSS keys (e.g., hash-sig-keys/).
     #[arg(long)]
     pub(crate) hash_sig_keys_dir: PathBuf,
-    #[arg(long, default_value = "9000")]
+    /// UDP port for the libp2p QUIC listener.
+    ///
+    /// Defaults one above `--discovery.port` so that `--discovery.enable` works
+    /// on its own: both are UDP sockets and cannot share a port.
+    #[arg(long, default_value = "9001")]
     pub(crate) gossipsub_port: u16,
     #[arg(long, default_value = "127.0.0.1")]
     pub(crate) http_address: IpAddr,
@@ -113,11 +115,66 @@ pub(crate) struct CliOptions {
     /// `on_block`.
     #[arg(long, default_value = "3")]
     pub(crate) max_attestations_per_block: usize,
+    #[command(flatten)]
+    pub(crate) discovery: DiscoveryConfig,
     /// Shadow-simulator sim-cost + fake-XMSS flags (only under the
     /// `shadow-integration` feature).
     #[cfg(feature = "shadow-integration")]
     #[command(flatten)]
     pub(crate) shadow: ShadowOptions,
+}
+
+/// discv5 peer discovery. Off by default: nothing else on the lean network
+/// speaks discv5 yet, so enabling it only finds other ethlambda nodes.
+#[derive(Debug, clap::Args)]
+pub(crate) struct DiscoveryConfig {
+    /// Enable discv5 peer discovery.
+    ///
+    /// Works with the default ports. If either is overridden, `--discovery.port`
+    /// must still differ from `--gossipsub-port`: both are UDP sockets and they
+    /// cannot share one port.
+    #[arg(long = "discovery.enable", default_value = "false")]
+    pub(crate) enable: bool,
+    /// UDP port for the discv5 socket.
+    ///
+    /// Independent of `--gossipsub-port`, which carries libp2p QUIC and
+    /// defaults one port above this one.
+    #[arg(long = "discovery.port", default_value = "9000")]
+    pub(crate) port: u16,
+    /// IP address to advertise in the ENR.
+    ///
+    /// Defaults to the bind address, which is the wildcard `0.0.0.0` and is not
+    /// dialable as published. Set this to the address peers should reach this
+    /// node on: `127.0.0.1` for a local devnet, or the host's public address.
+    /// discv5's PONG-based IP voting may still replace it at runtime.
+    #[arg(long = "discovery.advertise-ip")]
+    pub(crate) advertise_ip: Option<std::net::IpAddr>,
+    /// Connected-peer count above which discovery stops dialing.
+    ///
+    /// Governs the dial loop only, not discv5's own lookup pacing. The loop
+    /// keeps ticking either way and resumes dialing as soon as the connected
+    /// count drops back below this, so 0 means "discover and serve, never
+    /// dial".
+    #[arg(long = "discovery.target-peers", default_value_t = DEFAULT_DISCOVERY_TARGET_PEERS)]
+    pub(crate) target_peers: usize,
+}
+
+impl NodeOptions {
+    /// Reject a discovery port that collides with the QUIC port.
+    ///
+    /// Both are UDP. Without this the collision surfaces at bind time as an
+    /// opaque `EADDRINUSE` on whichever socket loses the race.
+    pub(crate) fn validate_discovery(&self) -> eyre::Result<()> {
+        if self.discovery.enable && self.discovery.port == self.gossipsub_port {
+            eyre::bail!(
+                "--discovery.port ({}) must differ from --gossipsub-port ({}): \
+                 both bind UDP and cannot share a port",
+                self.discovery.port,
+                self.gossipsub_port
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Shadow-simulator sim-cost + fake-XMSS flags. Compiled only under the
@@ -155,4 +212,59 @@ pub(crate) struct ShadowOptions {
         value_parser = clap::value_parser!(u64).range(1..=524_288)
     )]
     pub(crate) shadow_xmss_fake_proof_size: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::{Command, try_parse_from};
+
+    /// The required flags, so a test can vary only what it cares about.
+    ///
+    /// `NodeOptions` is a `clap::Args` group rather than a parser of its own,
+    /// so this parses through the real dispatch, as the binary does.
+    fn parse(extra: &[&str]) -> NodeOptions {
+        let mut argv = vec![
+            "ethlambda",
+            "--genesis",
+            "config.yaml",
+            "--validators",
+            "validators.yaml",
+            "--bootnodes",
+            "nodes.yaml",
+            "--validator-config",
+            "validator-config.yaml",
+            "--hash-sig-keys-dir",
+            "keys",
+            "--node-key",
+            "node.key",
+            "--node-id",
+            "ethlambda_0",
+        ];
+        argv.extend_from_slice(extra);
+        match try_parse_from(argv).expect("node options parse") {
+            Command::Node(options) => options,
+            other => panic!("expected a node invocation, got {other:?}"),
+        }
+    }
+
+    /// `--discovery.enable` on its own has to work: a default that is never
+    /// valid makes the flag a guaranteed startup failure.
+    #[test]
+    fn default_ports_let_discovery_be_enabled_alone() {
+        let options = parse(&["--discovery.enable"]);
+
+        assert_ne!(options.discovery.port, options.gossipsub_port);
+        assert!(options.validate_discovery().is_ok());
+    }
+
+    #[test]
+    fn colliding_ports_are_rejected_only_when_discovery_is_enabled() {
+        let ports = ["--gossipsub-port", "9000", "--discovery.port", "9000"];
+        let mut enabled = ports.to_vec();
+        enabled.push("--discovery.enable");
+
+        assert!(parse(&ports).validate_discovery().is_ok());
+        assert!(parse(&enabled).validate_discovery().is_err());
+    }
 }

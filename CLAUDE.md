@@ -280,6 +280,13 @@ actual_slot = finalized_slot + 1 + relative_index
   - Mesh size: 8 (6-12 bounds), heartbeat: 700ms
 - **Req/Resp**: Status, BlocksByRoot, BlocksByRange (snappy frame compression + varint length)
 
+### Peer Discovery (discv5, opt-in)
+- Off by default; `--discovery.enable` plus `--discovery.port` (own UDP socket, must differ from `--gossipsub-port`)
+- Reuses ethrex's `DiscoveryServer` + `PeerTable` with discv4 disabled; `spawn` takes the prepared lean ENR, so the record ethrex serves is the one we report
+- ENR follows the beacon phase0 spec: `ip`/`udp`/`quic`/`secp256k1`/`eth2`/`attnets`
+- Admission mirrors lighthouse: `eth2.fork_digest` must match, `next_fork_*` may differ, `quic` entry required. Handed to the peer table as `LeanFilter: PeerFilter`, so records are judged on arrival, not at dial time; a reject is re-judged on a higher-`seq` ENR
+- Candidates ranked by uncovered attestation subnets. See [`docs/discovery.md`](docs/discovery.md)
+
 ### Retry Strategy on Block Requests
 - Exponential backoff: doubling from `INITIAL_BACKOFF_MS` (5ms → 2560ms)
 - Max `MAX_FETCH_RETRIES` (10) attempts, random peer selection on retry
@@ -398,7 +405,7 @@ behavior.
 
 ## Resources
 
-**Specs:** `leanSpec/src/lean_spec/` (Python reference implementation)
+**Specs:** `leanSpec/src/lean_spec/spec/` (Python reference implementation; fork logic under `forks/<fork>/`, e.g. `forks/lstar/`)
 **Devnet:** `lean-quickstart` (github.com/blockblaz/lean-quickstart)
 **Docs:** `docs/` — `rpc.md`, `metrics.md`, `checkpoint_sync.md`, `3sf_mini.md`, `lmd_ghost.md` (mdbook via `make docs`)
 **Releases:** See `RELEASE.md` for release process documentation

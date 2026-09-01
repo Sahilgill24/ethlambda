@@ -1,5 +1,7 @@
+mod benchmark;
 mod checkpoint_sync;
 mod cli;
+mod command;
 mod fd_limit;
 mod version;
 
@@ -31,15 +33,16 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use clap::Parser;
-use cli::CliOptions;
+use cli::NodeOptions;
+use command::Command;
 use ethlambda_blockchain::MILLISECONDS_PER_SLOT;
 use ethlambda_blockchain::block_builder::ProposerConfig;
 use ethlambda_blockchain::key_manager::ValidatorKeyPair;
 use ethlambda_crypto::signature::ValidatorSecretKey;
 use ethlambda_network_api::{InitBlockChain, InitP2P, ToBlockChainToP2PRef, ToP2PToBlockChainRef};
 use ethlambda_p2p::{
-    Bootnode, P2P, PeerId, SwarmConfig, attestation_subscription_subnets, build_swarm, parse_enrs,
+    Bootnode, P2P, PeerId, SwarmConfig, attestation_subscription_subnets, build_swarm,
+    discovery::DiscoverySpawnConfig, parse_enrs,
 };
 use ethlambda_types::primitives::{H256, HashTreeRoot as _};
 use ethlambda_types::{
@@ -66,21 +69,55 @@ const ASCII_ART: &str = r#"
  \___|\__|_| |_|_|\__,_|_| |_| |_|_.__/ \__,_|\__,_|
 "#;
 
+fn main() -> eyre::Result<()> {
+    match command::parse() {
+        Command::Node(options) => {
+            init_node_logging()?;
+            run_node(options)
+        }
+        // The benchmark is synchronous, CPU-bound work, so it runs on this
+        // thread and the tokio runtime is never started — rather than parking
+        // a worker thread for the whole run.
+        Command::Benchmark(options) => {
+            init_benchmark_logging()?;
+            benchmark::run(options)
+        }
+    }
+}
+
+/// Node logging: INFO and above, on stdout.
+fn init_node_logging() -> eyre::Result<()> {
+    let filter = EnvFilter::builder()
+        .with_default_directive(tracing::Level::INFO.into())
+        .from_env_lossy();
+    let subscriber = Registry::default().with(tracing_subscriber::fmt::layer().with_filter(filter));
+    tracing::subscriber::set_global_default(subscriber)
+        .wrap_err("failed to set global tracing subscriber")
+}
+
+/// Benchmark logging: WARN and above, on stderr, so that the report owns stdout
+/// and stays pipe-clean for `--format json | jq`.
+fn init_benchmark_logging() -> eyre::Result<()> {
+    let filter = EnvFilter::builder()
+        .with_default_directive(tracing::Level::WARN.into())
+        .from_env_lossy();
+    let subscriber = Registry::default().with(
+        tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_filter(filter),
+    );
+    tracing::subscriber::set_global_default(subscriber)
+        .wrap_err("failed to set global tracing subscriber")
+}
+
 // Shadow single-steps execution in a discrete-event simulation, so the default
 // multi-threaded runtime's worker threads add only scheduling noise, never
 // parallelism. Use a single-threaded runtime under Shadow. This is an
 // optimization, not a correctness requirement.
 #[cfg_attr(not(feature = "shadow-integration"), tokio::main)]
 #[cfg_attr(feature = "shadow-integration", tokio::main(flavor = "current_thread"))]
-async fn main() -> eyre::Result<()> {
-    let filter = EnvFilter::builder()
-        .with_default_directive(tracing::Level::INFO.into())
-        .from_env_lossy();
-    let subscriber = Registry::default().with(tracing_subscriber::fmt::layer().with_filter(filter));
-    tracing::subscriber::set_global_default(subscriber)
-        .wrap_err("failed to set global tracing subscriber")?;
-
-    let options = CliOptions::parse();
+async fn run_node(options: NodeOptions) -> eyre::Result<()> {
+    options.validate_discovery()?;
 
     #[cfg(feature = "shadow-integration")]
     init_shadow_cost(&options.shadow);
@@ -261,12 +298,12 @@ async fn main() -> eyre::Result<()> {
     );
 
     let built = build_swarm(SwarmConfig {
-        node_key: node_p2p_key,
-        bootnodes,
+        node_key: node_p2p_key.clone(),
+        bootnodes: bootnodes.clone(),
         listening_socket: p2p_socket,
         validator_ids,
         attestation_committee_count,
-        subscription_subnets: subscribed_subnets,
+        subscription_subnets: subscribed_subnets.clone(),
     })
     .wrap_err("failed to build swarm")?;
 
@@ -274,7 +311,23 @@ async fn main() -> eyre::Result<()> {
     // RPC `/lean/v0/node/identity` endpoint reports it.
     let local_peer_id = built.local_peer_id.to_string();
 
-    let p2p = P2P::spawn(built, store.clone(), node_names);
+    // `None` when discovery is disabled; `P2P::spawn` starts the discv5 server
+    // from it and owns the resulting handle.
+    let discovery = options.discovery.enable.then(|| DiscoverySpawnConfig {
+        node_key: node_p2p_key,
+        bind_ip: p2p_socket.ip(),
+        discovery_port: options.discovery.port,
+        quic_port: p2p_socket.port(),
+        subscription_subnets: subscribed_subnets,
+        attestation_committee_count,
+        bootnodes,
+        advertise_ip: options.discovery.advertise_ip,
+        target_peers: options.discovery.target_peers,
+    });
+
+    let p2p = P2P::spawn(built, store.clone(), node_names, discovery)
+        .await
+        .wrap_err("failed to start discv5 discovery")?;
 
     // Wire actors together via protocol refs
     blockchain

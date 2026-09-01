@@ -36,7 +36,7 @@ The exposed metrics follow [the leanMetrics specification](https://github.com/le
 |--------|-------|-------|-------------------------|--------|---------|-----------|
 | `lean_block_aggregated_payloads` | Histogram | Number of `aggregated_payloads` in a block | On block production | | 1, 2, 4, 8, 16, 32, 64, 128 | ✅ |
 | `lean_block_building_payload_aggregation_time_seconds` | Histogram | Time taken to build `aggregated_payloads` during block building | On block production | | 0.1, 0.25, 0.5, 0.75, 1, 2, 3, 4 | ✅ |
-| `lean_block_building_time_seconds` | Histogram | Time taken to build a block | On block production | | 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1 | ✅ |
+| `lean_block_building_time_seconds` | Histogram | Time taken to build a block | On block production | | 0.1, 0.25, 0.5, 0.75, 1, 2, 4, 8 | ✅ |
 | `lean_block_building_success_total` | Counter | Successful block builds | On block production | | | ✅ |
 | `lean_block_building_failures_total` | Counter | Failed block builds (error building the block, signing the block root, or processing it locally) | On block production failure | | | ✅ |
 | `lean_block_proposal_attestation_build_phase_seconds` | Histogram | Phase-level time in block-proposal attestation selection | On block production | phase=select_payloads,compact,stf_simulate | 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8 | ✅ |
@@ -44,6 +44,12 @@ The exposed metrics follow [the leanMetrics specification](https://github.com/le
 | `lean_block_proposal_child_payloads_consumed_total` | Counter | Child aggregated payloads selected during greedy proof picking (before compaction) | On block production | | | ✅ |
 | `lean_block_proposal_attestation_data_selected` | Histogram | Distinct `AttestationData` entries in the proposal block body | On block production | | 0, 1, 2, 4, 8, 16, 32 | ✅ |
 | `lean_block_proposal_aggregates_selected` | Histogram | Aggregated signature proofs in the proposal result after compaction | On block production | | 0, 1, 2, 4, 8, 16, 32, 64, 128 | ✅ |
+
+> `lean_block_building_time_seconds` intentionally deviates from the leanMetrics bucket
+> set, which tops out at 1s. Real builds on our devnets routinely run past that, so every
+> sample landed in `+Inf` and `histogram_quantile` reported a flat 1s ceiling. The range
+> now covers the same span as the `lean_block_proposal_attestation_build_phase_seconds`
+> phases it contains.
 
 ## Fork-Choice Metrics
 
@@ -119,6 +125,18 @@ The metrics below are not part of the [leanMetrics specification](https://github
 | `lean_gossip_aggregation_size_bytes` | Histogram | Bytes size of a gossip aggregated attestation message (raw SSZ or snappy on-wire) | On gossip aggregation send/receive | compression=raw,snappy | 1024, 4096, 16384, 65536, 131072, 262144, 524288, 1048576 |
 | `lean_reqresp_request_size_bytes` | Histogram | Bytes size of a req/resp request (raw SSZ or snappy on-wire) | On req/resp request send/receive | protocol=status,blocks_by_root<br>compression=raw,snappy | 64, 128, 256, 512, 1024, 4096, 16384, 65536 |
 | `lean_reqresp_response_chunk_size_bytes` | Histogram | Bytes size of a single req/resp response chunk (raw SSZ or snappy on-wire) | On req/resp response chunk send/receive | protocol=status,blocks_by_root<br>compression=raw,snappy | 128, 1024, 10000, 100000, 500000, 1000000, 5000000, 10000000 |
+
+### Peer Discovery
+
+Only emitted when discv5 discovery is enabled (`--discovery.enable`); see
+[Peer discovery](./discovery.md). Counts dials discovery initiated, as opposed to
+the static bootnode dials every node makes. Connection outcomes are not repeated
+here: a discovery dial that succeeds or fails shows up in
+`lean_peer_connection_events_total` like any other.
+
+| Name | Type | Usage | Sample collection event | Labels |
+|------|------|-------|-------------------------|--------|
+| `lean_discovered_peers_dialed_total` | Counter | Peers dialed as a result of discv5 discovery | On dialing a discovered peer | |
 
 ### Gossip Arrival Timing
 
