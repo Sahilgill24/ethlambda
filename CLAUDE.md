@@ -30,7 +30,7 @@ crates/
         └─ src/metrics.rs   # State transition timing + counters
   common/
     ├─ types/               # Core types (State, Block, Attestation, Checkpoint)
-    ├─ crypto/              # XMSS aggregation (leansig wrapper)
+    ├─ crypto/              # XMSS sign/verify + aggregation (leanVM wrapper)
     ├─ metrics/             # Prometheus re-exports, TimingGuard, gather utilities
     └─ test-fixtures/       # Spec-fixture loading (prod dep of rpc's Hive test driver)
   net/
@@ -52,7 +52,7 @@ crates/
 - Communication via `mpsc::unbounded_channel`
 - Shared storage via `Arc<dyn StorageBackend>` (clone Store, share backend)
 
-### Tick-Based Validator Duties (4-second slots, 5 intervals per slot)
+### Tick-Based Validator Duties (5 intervals per slot; 4-second slots by default)
 ```
 Interval 0: Block published (at the slot boundary). The build+publish code path is merged into the previous slot's interval 4 (see below) and aligned to publish here; no attestation acceptance happens at interval 0.
 Interval 1: Attestation production (all validators, including proposer)
@@ -90,6 +90,8 @@ make test                                    # All tests + forkchoice spec tests
 ### Common Operations
 ```bash
 rm -rf leanSpec && make leanSpec/fixtures                # Download latest released test fixtures
+make update UPDATE_ARGS="-p <crate>"                     # Bump deps under the 14-day publish-age cooldown (nightly resolver)
+make cooldown-check                                      # Fail if a lockfile pins crates younger than the cooldown (same as CI)
 make docker-build                                        # Build Docker image (DOCKER_TAG=local)
 make run-devnet                                          # Run local devnet with lean-quickstart
 ```
@@ -262,9 +264,39 @@ actual_slot = finalized_slot + 1 + relative_index
 
 **XMSS (eXtended Merkle Signature Scheme):**
 - Post-quantum signature scheme
-- 52-byte public keys, 2536-byte signatures (`SIGNATURE_SIZE` in `common/types/src/signature.rs`)
+- Wire sizes: `PUBLIC_KEY_SIZE` (`common/types/src/state.rs`) and `SIGNATURE_SIZE`
+  (`common/types/src/attestation.rs`), static-asserted against leanVM's scheme
+  constants in `common/crypto/src/signature.rs`
 - Epoch-based to prevent reuse
-- Aggregation via leanVM (previously leanMultisig) for efficiency
+- Signing, verification, and aggregation all come from leanVM, which internalized
+  XMSS in its own `xmss` crate; there is no external leanSig dependency
+- BLAKE2s over binary fields, not Poseidon over KoalaBear: a leanVM `main` bump
+  across that rewrite invalidates every genesis key and every stored proof, even
+  when the wire sizes happen to match
+- `ethlambda_crypto::init_leanvm(use_arena)` must run once at startup, before any
+  proving or proof decoding. `--prover-arena` opts into leanVM's bump arena,
+  which recycles the prover's large buffers across proofs instead of re-faulting
+  them, so its pages stay resident for the node's lifetime
+- `ethlambda keygen` generates genesis validator keys through the same
+  `ValidatorSecretKey` the node loads them with, so a key set cannot be built
+  against a different leanVM than the client reading it. Keys are only usable by
+  a client on the matching revision, and no file size changes when the scheme
+  does, so the manifest records `leanvm_rev`. See [`docs/keygen.md`](docs/keygen.md)
+
+**Aggregation shape (one leanVM `AggregateSignature`, grouped by `(epoch, message)`):**
+- Type-1 and Type-2 are the same object: one `XmssGroup` per `(epoch, message)`
+  pair, carrying that group's sorted, deduplicated keys
+- **A slot can carry several messages.** Validators attesting moments apart
+  disagree within a slot, so two distinct `AttestationData` at one slot is
+  ordinary rather than equivocation and a block routinely carries both. The
+  groups are sorted on the whole pair: with two of them at one slot, sorting on
+  the epoch alone rebuilds a different signer set and fails a valid proof
+- **The binding is off the wire.** `to_bytes_without_pubkeys()` carries neither
+  the keys nor the `(slot, message)` pairs, so every decode rebuilds the whole
+  signer set from a `SignerSet` per claim. A wrong set, message or slot decodes
+  fine and fails inside the SNARK verifier, so there is no cheap binding check
+- Narrowing replaces splitting: re-aggregate the parent with a `declare` naming
+  the group to keep (`split_type_2_by_message`)
 
 **Signature Aggregation (Two-Phase):**
 1. **Gossip signatures**: Fresh XMSS from network → aggregate via leanVM
@@ -273,7 +305,8 @@ actual_slot = finalized_slot + 1 + relative_index
 ## Networking (libp2p)
 
 ### Protocols
-- **Transport**: QUIC over UDP (TLS 1.3)
+- **Transport**: QUIC over UDP (TLS 1.3), plus TCP (noise + yamux) on the same port number as a fallback: a peer whose advertised `quic` doesn't answer can still be reached over TCP, and libp2p races both addresses within one dial (list order confers no preference; the default `dial_concurrency_factor` starts both handshakes)
+  - Binding TCP puts `--gossipsub-port` in the HTTP servers' namespace, so it must now differ from `--api-port`/`--metrics-port` too. `NodeOptions::validate_ports` rejects every clash before anything binds
 - **Gossipsub**: Blocks + Attestations (snappy raw compression)
   - Topic: `/leanconsensus/{fork_digest}/{block|aggregation|attestation_N}/ssz_snappy`
   - `fork_digest` is a 4-byte hex string (no `0x` prefix); currently the dummy `12345678` agreed across clients
@@ -283,8 +316,8 @@ actual_slot = finalized_slot + 1 + relative_index
 ### Peer Discovery (discv5, opt-in)
 - Off by default; `--discovery.enable` plus `--discovery.port` (own UDP socket, must differ from `--gossipsub-port`)
 - Reuses ethrex's `DiscoveryServer` + `PeerTable` with discv4 disabled; `spawn` takes the prepared lean ENR, so the record ethrex serves is the one we report
-- ENR follows the beacon phase0 spec: `ip`/`udp`/`quic`/`secp256k1`/`eth2`/`attnets`
-- Admission mirrors lighthouse: `eth2.fork_digest` must match, `next_fork_*` may differ, `quic` entry required. Handed to the peer table as `LeanFilter: PeerFilter`, so records are judged on arrival, not at dial time; a reject is re-judged on a higher-`seq` ENR
+- ENR follows the beacon phase0 spec: `ip`/`udp`/`quic`/`tcp`/`secp256k1`/`eth2`/`attnets`
+- Admission mirrors lighthouse: `eth2.fork_digest` must match, `next_fork_*` may differ, a `quic` or `tcp` entry required. Handed to the peer table as `LeanFilter: PeerFilter`, so records are judged on arrival, not at dial time; a reject is re-judged on a higher-`seq` ENR
 - Candidates ranked by uncovered attestation subnets. See [`docs/discovery.md`](docs/discovery.md)
 
 ### Retry Strategy on Block Requests
@@ -306,15 +339,22 @@ one port is supported and not a misconfiguration. See [`docs/rpc.md`](docs/rpc.m
 **Genesis:** `config.yaml` (YAML format, cross-client compatible)
 ```yaml
 GENESIS_TIME: 1770407233
+MILLISECONDS_PER_SLOT: 4000  # optional, defaults to DEFAULT_MILLISECONDS_PER_SLOT
 GENESIS_VALIDATORS:
-  - attestation_pubkey: "cd323f232b34ab26d6db7402c886e74ca81cfd3a..."  # 52-byte XMSS pubkeys (hex)
+  - attestation_pubkey: "cd323f232b34ab26d6db7402c886e74ca81cfd3a..."  # XMSS pubkeys, hex, PUBLIC_KEY_SIZE bytes
     proposal_pubkey: "b7b0f72e24801b02bda64073cb4de6699a416b37..."
 ```
 - Validator indices are assigned sequentially (0, 1, 2, ...) based on array order
+- `MILLISECONDS_PER_SLOT` must be a multiple of `INTERVALS_PER_SLOT` and at least
+  `MIN_MILLISECONDS_PER_SLOT`: the knob slows a network down, it does not speed one up,
+  since timings fixed in milliseconds (`EARLY_AGGREGATION_WINDOW`) are sized for the spec
+  cadence. It is persisted in the DB's `Metadata["config"]` and a resume with a different
+  value is refused. Other clients ignore the key and stay at their compile-time 4s, so it
+  only takes effect on an all-ethlambda network
 - All genesis state fields (checkpoints, justified_slots, etc.) initialize to zero/empty defaults
 - Matches Ream/Zeam format — no extra state fields in the config file
 
-**Bootnodes:** ENR records (Base64-encoded, RLP decoded for QUIC port + secp256k1 pubkey)
+**Bootnodes:** ENR records (Base64-encoded, RLP decoded for the `quic`/`tcp`/`udp` ports + secp256k1 pubkey). A `0` port means absent everywhere, on read and on write. `build_swarm` dedups by `PeerId`: two entries naming one key merge into a single dial
 
 ## Testing
 
@@ -392,7 +432,9 @@ behavior.
 ## External Dependencies
 
 **Critical:**
-- `leansig`: XMSS signatures (leanEthereum project)
+- `leanvm`: XMSS signatures and recursive aggregation, taken from leanVM's facade
+  crate (which re-exports `xmss`, `rec_aggregation` and its `rand`) and pinned to
+  one `main` revision (leanEthereum project)
 - `libssz` / `libssz-derive` / `libssz-types`: SSZ serialization
 - `libssz-merkle`: Merkle tree hashing (`hash_tree_root()`)
 - `spawned-concurrency`: Actor model

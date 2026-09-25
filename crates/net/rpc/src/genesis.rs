@@ -33,6 +33,7 @@ mod tests {
         http::{Request, StatusCode},
     };
     use ethlambda_storage::{Store, backend::InMemoryBackend};
+    use ethlambda_types::constants::DEFAULT_MILLISECONDS_PER_SLOT;
     use ethlambda_types::state::{State, Validator};
     use http_body_util::BodyExt;
     use std::sync::Arc;
@@ -42,14 +43,18 @@ mod tests {
     async fn genesis_returns_time_and_validator_count() {
         // Build a state with 3 validators so the assertion is non-vacuous.
         let dummy_validator = |index: u64| Validator {
-            attestation_pubkey: [0u8; 52],
-            proposal_pubkey: [0u8; 52],
+            attestation_pubkey: [0u8; 32],
+            proposal_pubkey: [0u8; 32],
             index,
         };
         let validators = vec![dummy_validator(0), dummy_validator(1), dummy_validator(2)];
         let state = State::from_genesis(1000, validators);
 
-        let store = Store::from_anchor_state(Arc::new(InMemoryBackend::new()), state);
+        let store = Store::from_anchor_state(
+            Arc::new(InMemoryBackend::new()),
+            state,
+            DEFAULT_MILLISECONDS_PER_SLOT,
+        );
         let app = routes().with_state(store);
         let resp = app
             .oneshot(

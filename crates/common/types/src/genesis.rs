@@ -1,5 +1,9 @@
 use serde::Deserialize;
 
+use crate::chain_config::ChainConfig;
+use crate::constants::{
+    DEFAULT_MILLISECONDS_PER_SLOT, INTERVALS_PER_SLOT, MIN_MILLISECONDS_PER_SLOT,
+};
 use crate::state::{State, Validator, ValidatorPubkeyBytes};
 
 /// Ways a state can fail to belong to the configured genesis.
@@ -11,6 +15,8 @@ use crate::state::{State, Validator, ValidatorPubkeyBytes};
 pub enum GenesisMismatch {
     #[error("genesis time mismatch: expected {expected}, got {got}")]
     GenesisTime { expected: u64, got: u64 },
+    #[error("slot duration mismatch: expected {expected} ms, got {got} ms")]
+    SlotDuration { expected: u64, got: u64 },
     #[error("validator count mismatch: expected {expected}, got {got}")]
     ValidatorCount { expected: usize, got: usize },
     #[error(
@@ -34,6 +40,19 @@ pub struct GenesisValidatorEntry {
 pub struct GenesisConfig {
     #[serde(rename = "GENESIS_TIME")]
     pub genesis_time: u64,
+    /// Slot duration in milliseconds, shared by every node on the network.
+    ///
+    /// Optional: a config file that omits the key gets
+    /// [`DEFAULT_MILLISECONDS_PER_SLOT`], which is what the whole network ran
+    /// on before the key existed. Other clients still hold the value at
+    /// compile time and ignore unknown keys, so setting it only has an effect
+    /// on a network where every node reads it.
+    #[serde(
+        rename = "MILLISECONDS_PER_SLOT",
+        default = "default_milliseconds_per_slot",
+        deserialize_with = "deser_milliseconds_per_slot"
+    )]
+    pub milliseconds_per_slot: u64,
     #[serde(rename = "GENESIS_VALIDATORS")]
     pub genesis_validators: Vec<GenesisValidatorEntry>,
 }
@@ -66,6 +85,57 @@ impl GenesisConfig {
     pub fn verify_state(&self, state: &State) -> Result<(), GenesisMismatch> {
         verify_state_genesis(state, self.genesis_time, &self.validators())
     }
+
+    /// Verify a persisted [`ChainConfig`] belongs to this network.
+    ///
+    /// Complements [`Self::verify_state`], which cannot see the slot duration:
+    /// it is absent from the SSZ state on purpose. A data directory built at a
+    /// different cadence carries blocks whose slot numbers mean something else,
+    /// so it is as foreign as one from a different genesis.
+    pub fn verify_time_config(&self, persisted: &ChainConfig) -> Result<(), GenesisMismatch> {
+        if persisted.genesis_time != self.genesis_time {
+            return Err(GenesisMismatch::GenesisTime {
+                expected: self.genesis_time,
+                got: persisted.genesis_time,
+            });
+        }
+        if persisted.milliseconds_per_slot != self.milliseconds_per_slot {
+            return Err(GenesisMismatch::SlotDuration {
+                expected: self.milliseconds_per_slot,
+                got: persisted.milliseconds_per_slot,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn default_milliseconds_per_slot() -> u64 {
+    DEFAULT_MILLISECONDS_PER_SLOT
+}
+
+/// Parse `MILLISECONDS_PER_SLOT`, rejecting values the interval grid cannot
+/// represent and cadences faster than the client is built for.
+///
+/// A slot is cut into [`INTERVALS_PER_SLOT`] equal intervals and every duty is
+/// scheduled off that boundary, so a duration that does not divide evenly would
+/// leave the last interval short and drift the grid against the wall clock.
+/// [`MIN_MILLISECONDS_PER_SLOT`] is the other bound: the knob is there to slow
+/// a network down, and the timings the client fixes in milliseconds rather than
+/// as a fraction of the slot assume a slot no shorter than that.
+fn deser_milliseconds_per_slot<'de, D>(d: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let ms = u64::deserialize(d)?;
+    if ms < MIN_MILLISECONDS_PER_SLOT || ms % INTERVALS_PER_SLOT != 0 {
+        return Err(D::Error::custom(format!(
+            "MILLISECONDS_PER_SLOT is {ms}; expected a multiple of {INTERVALS_PER_SLOT} \
+             no smaller than {MIN_MILLISECONDS_PER_SLOT}"
+        )));
+    }
+    Ok(ms)
 }
 
 /// Verify `state` was produced by the genesis described by `genesis_time` and
@@ -122,7 +192,11 @@ where
     let bytes =
         hex::decode(s).map_err(|_| D::Error::custom(format!("pubkey is not valid hex: {s}")))?;
     bytes.try_into().map_err(|v: Vec<u8>| {
-        D::Error::custom(format!("pubkey has length {} (expected 52)", v.len()))
+        D::Error::custom(format!(
+            "pubkey has length {} (expected {})",
+            v.len(),
+            crate::state::PUBLIC_KEY_SIZE
+        ))
     })
 }
 
@@ -134,12 +208,12 @@ mod tests {
         state::{State, Validator},
     };
 
-    const ATT_PUBKEY_A: &str = "cd323f232b34ab26d6db7402c886e74ca81cfd3a0c659d2fe022356f25592f7d2d25ca7b19604f5a180037046cf2a02e1da4a800";
-    const PROP_PUBKEY_A: &str = "b7b0f72e24801b02bda64073cb4de6699a416b37dfead227d7ca3922647c940fa03e4c012e8a0e656b731934aeac124a5337e333";
-    const ATT_PUBKEY_B: &str = "8d9cbc508b20ef43e165f8559c1bdd18aaeda805ef565a4f9ffd6e4fbed01c05e143e305017847445859650d6dd06e6efb3f8410";
-    const PROP_PUBKEY_B: &str = "cd323f232b34ab26d6db7402c886e74ca81cfd3a0c659d2fe022356f25592f7d2d25ca7b19604f5a180037046cf2a02e1da4a800";
-    const ATT_PUBKEY_C: &str = "b7b0f72e24801b02bda64073cb4de6699a416b37dfead227d7ca3922647c940fa03e4c012e8a0e656b731934aeac124a5337e333";
-    const PROP_PUBKEY_C: &str = "8d9cbc508b20ef43e165f8559c1bdd18aaeda805ef565a4f9ffd6e4fbed01c05e143e305017847445859650d6dd06e6efb3f8410";
+    const ATT_PUBKEY_A: &str = "cd323f232b34ab26d6db7402c886e74ca81cfd3a0c659d2fe022356f25592f7d";
+    const PROP_PUBKEY_A: &str = "b7b0f72e24801b02bda64073cb4de6699a416b37dfead227d7ca3922647c940f";
+    const ATT_PUBKEY_B: &str = "8d9cbc508b20ef43e165f8559c1bdd18aaeda805ef565a4f9ffd6e4fbed01c05";
+    const PROP_PUBKEY_B: &str = "cd323f232b34ab26d6db7402c886e74ca81cfd3a0c659d2fe022356f25592f7d";
+    const ATT_PUBKEY_C: &str = "b7b0f72e24801b02bda64073cb4de6699a416b37dfead227d7ca3922647c940f";
+    const PROP_PUBKEY_C: &str = "8d9cbc508b20ef43e165f8559c1bdd18aaeda805ef565a4f9ffd6e4fbed01c05";
 
     const TEST_CONFIG_YAML: &str = r#"# Genesis Settings
 GENESIS_TIME: 1770407233
@@ -152,12 +226,12 @@ VALIDATOR_COUNT: 3
 
 # Genesis Validator Pubkeys
 GENESIS_VALIDATORS:
-    - attestation_pubkey: "cd323f232b34ab26d6db7402c886e74ca81cfd3a0c659d2fe022356f25592f7d2d25ca7b19604f5a180037046cf2a02e1da4a800"
-      proposal_pubkey: "b7b0f72e24801b02bda64073cb4de6699a416b37dfead227d7ca3922647c940fa03e4c012e8a0e656b731934aeac124a5337e333"
-    - attestation_pubkey: "8d9cbc508b20ef43e165f8559c1bdd18aaeda805ef565a4f9ffd6e4fbed01c05e143e305017847445859650d6dd06e6efb3f8410"
-      proposal_pubkey: "cd323f232b34ab26d6db7402c886e74ca81cfd3a0c659d2fe022356f25592f7d2d25ca7b19604f5a180037046cf2a02e1da4a800"
-    - attestation_pubkey: "b7b0f72e24801b02bda64073cb4de6699a416b37dfead227d7ca3922647c940fa03e4c012e8a0e656b731934aeac124a5337e333"
-      proposal_pubkey: "8d9cbc508b20ef43e165f8559c1bdd18aaeda805ef565a4f9ffd6e4fbed01c05e143e305017847445859650d6dd06e6efb3f8410"
+    - attestation_pubkey: "cd323f232b34ab26d6db7402c886e74ca81cfd3a0c659d2fe022356f25592f7d"
+      proposal_pubkey: "b7b0f72e24801b02bda64073cb4de6699a416b37dfead227d7ca3922647c940f"
+    - attestation_pubkey: "8d9cbc508b20ef43e165f8559c1bdd18aaeda805ef565a4f9ffd6e4fbed01c05"
+      proposal_pubkey: "cd323f232b34ab26d6db7402c886e74ca81cfd3a0c659d2fe022356f25592f7d"
+    - attestation_pubkey: "b7b0f72e24801b02bda64073cb4de6699a416b37dfead227d7ca3922647c940f"
+      proposal_pubkey: "8d9cbc508b20ef43e165f8559c1bdd18aaeda805ef565a4f9ffd6e4fbed01c05"
 "#;
 
     #[test]
@@ -224,7 +298,7 @@ GENESIS_VALIDATORS:
 
         // Pin the state root so SSZ layout changes are caught immediately.
         let expected_state_root = crate::primitives::H256::from_slice(
-            &hex::decode("babcdc9235a29dfc0d605961df51cfc85732f85291c2beea8b7510a92ec458fe")
+            &hex::decode("3e8c8507e94e045327c2fc66a58db374805cb490a087b3101bb13a9b8b611b54")
                 .unwrap(),
         );
         assert_eq!(root, expected_state_root, "state root mismatch");
@@ -233,7 +307,7 @@ GENESIS_VALIDATORS:
         block.state_root = root;
         let block_root = block.hash_tree_root();
         let expected_block_root = crate::primitives::H256::from_slice(
-            &hex::decode("66a8beaa81d2aaeac7212d4bf8f5fea2bd22d479566a33a83c891661c21235ef")
+            &hex::decode("ba3502921697db025b3a6d7c05fbaf58e52155575438cca9794e22e6e9872090")
                 .unwrap(),
         );
         assert_eq!(block_root, expected_block_root, "block root mismatch");
@@ -313,6 +387,97 @@ GENESIS_VALIDATORS:
             Err(GenesisMismatch::NonSequentialIndex {
                 position: 1,
                 got: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn slot_duration_defaults_when_the_key_is_absent() {
+        let config = test_config();
+        assert_eq!(config.milliseconds_per_slot, DEFAULT_MILLISECONDS_PER_SLOT);
+    }
+
+    #[test]
+    fn slot_duration_is_read_from_the_config_file() {
+        let yaml = format!("MILLISECONDS_PER_SLOT: 8000\n{TEST_CONFIG_YAML}");
+        let config: GenesisConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+
+        assert_eq!(config.milliseconds_per_slot, 8_000);
+    }
+
+    #[test]
+    fn slot_duration_must_divide_into_whole_intervals() {
+        let yaml = format!("MILLISECONDS_PER_SLOT: 8001\n{TEST_CONFIG_YAML}");
+        let err = serde_yaml_ng::from_str::<GenesisConfig>(&yaml).unwrap_err();
+
+        assert!(
+            err.to_string().contains("MILLISECONDS_PER_SLOT is 8001"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn slot_duration_must_be_positive() {
+        let yaml = format!("MILLISECONDS_PER_SLOT: 0\n{TEST_CONFIG_YAML}");
+        assert!(serde_yaml_ng::from_str::<GenesisConfig>(&yaml).is_err());
+    }
+
+    /// A whole number of intervals is not enough on its own: the client's
+    /// fixed-millisecond timings need the slot to be at least
+    /// [`MIN_MILLISECONDS_PER_SLOT`] wide.
+    #[test]
+    fn slot_duration_must_not_be_faster_than_the_minimum() {
+        let too_fast = MIN_MILLISECONDS_PER_SLOT - INTERVALS_PER_SLOT;
+        let yaml = format!("MILLISECONDS_PER_SLOT: {too_fast}\n{TEST_CONFIG_YAML}");
+        let err = serde_yaml_ng::from_str::<GenesisConfig>(&yaml).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains(&format!("MILLISECONDS_PER_SLOT is {too_fast}")),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn slot_duration_accepts_the_minimum_itself() {
+        let yaml =
+            format!("MILLISECONDS_PER_SLOT: {MIN_MILLISECONDS_PER_SLOT}\n{TEST_CONFIG_YAML}");
+        let config: GenesisConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+
+        assert_eq!(config.milliseconds_per_slot, MIN_MILLISECONDS_PER_SLOT);
+    }
+
+    #[test]
+    fn verify_time_config_accepts_the_config_it_describes() {
+        let config = test_config();
+        let persisted = ChainConfig::new(config.genesis_time, config.milliseconds_per_slot);
+        assert_eq!(config.verify_time_config(&persisted), Ok(()));
+    }
+
+    #[test]
+    fn verify_time_config_rejects_a_different_slot_duration() {
+        let config = test_config();
+        let persisted = ChainConfig::new(config.genesis_time, 8_000);
+
+        assert_eq!(
+            config.verify_time_config(&persisted),
+            Err(GenesisMismatch::SlotDuration {
+                expected: DEFAULT_MILLISECONDS_PER_SLOT,
+                got: 8_000,
+            })
+        );
+    }
+
+    #[test]
+    fn verify_time_config_rejects_a_different_genesis_time() {
+        let config = test_config();
+        let persisted = ChainConfig::new(config.genesis_time + 1, config.milliseconds_per_slot);
+
+        assert_eq!(
+            config.verify_time_config(&persisted),
+            Err(GenesisMismatch::GenesisTime {
+                expected: config.genesis_time,
+                got: config.genesis_time + 1,
             })
         );
     }

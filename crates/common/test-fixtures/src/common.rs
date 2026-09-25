@@ -8,7 +8,7 @@ use ethlambda_types::{
     checkpoint::Checkpoint as DomainCheckpoint,
     primitives::H256,
     state::{
-        ChainConfig, JustificationValidators, JustifiedSlots, State, Validator as DomainValidator,
+        JustificationValidators, JustifiedSlots, State, StateConfig, Validator as DomainValidator,
         ValidatorPubkeyBytes,
     },
 };
@@ -36,9 +36,9 @@ pub struct Config {
     pub genesis_time: u64,
 }
 
-impl From<Config> for ChainConfig {
+impl From<Config> for StateConfig {
     fn from(value: Config) -> Self {
-        ChainConfig {
+        StateConfig {
             genesis_time: value.genesis_time,
         }
     }
@@ -329,7 +329,12 @@ where
     let pubkey: ValidatorPubkeyBytes = hex::decode(value.strip_prefix("0x").unwrap_or(&value))
         .map_err(|_| D::Error::custom("ValidatorPubkey value is not valid hex"))?
         .try_into()
-        .map_err(|_| D::Error::custom("ValidatorPubkey length != 52"))?;
+        .map_err(|_| {
+            D::Error::custom(format!(
+                "ValidatorPubkey length != {}",
+                ethlambda_types::state::PUBLIC_KEY_SIZE
+            ))
+        })?;
     Ok(pubkey)
 }
 

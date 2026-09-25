@@ -341,7 +341,7 @@ mod tests {
     use ethlambda_types::block::BlockHeader;
     use ethlambda_types::checkpoint::Checkpoint;
     use ethlambda_types::primitives::H256;
-    use ethlambda_types::state::{ChainConfig, JustificationValidators, JustifiedSlots};
+    use ethlambda_types::state::{JustificationValidators, JustifiedSlots, StateConfig};
     use libssz_types::SszList;
 
     // Helper to create valid test state
@@ -364,7 +364,7 @@ mod tests {
                 slot: slot.saturating_sub(20),
                 root: H256::ZERO,
             },
-            config: ChainConfig { genesis_time },
+            config: StateConfig { genesis_time },
             historical_block_hashes: Default::default(),
             justified_slots: JustifiedSlots::new(),
             justifications_roots: Default::default(),
@@ -374,16 +374,16 @@ mod tests {
 
     fn create_test_validator() -> Validator {
         Validator {
-            attestation_pubkey: [1u8; 52],
-            proposal_pubkey: [11u8; 52],
+            attestation_pubkey: [1u8; 32],
+            proposal_pubkey: [11u8; 32],
             index: 0,
         }
     }
 
     fn create_different_validator() -> Validator {
         Validator {
-            attestation_pubkey: [2u8; 52],
-            proposal_pubkey: [22u8; 52],
+            attestation_pubkey: [2u8; 32],
+            proposal_pubkey: [22u8; 32],
             index: 0,
         }
     }
@@ -391,8 +391,8 @@ mod tests {
     fn create_validators_with_indices(count: usize) -> Vec<Validator> {
         (0..count)
             .map(|i| Validator {
-                attestation_pubkey: [i as u8 + 1; 52],
-                proposal_pubkey: [i as u8 + 101; 52],
+                attestation_pubkey: [i as u8 + 1; 32],
+                proposal_pubkey: [i as u8 + 101; 32],
                 index: i as u64,
             })
             .collect()
