@@ -10,6 +10,8 @@ use libssz::SszDecode as _;
 /// correct run must commit (computed here from the fetched block/state).
 pub struct ReplayInput {
     pub id: String,
+    pub slot: u64,
+    pub attestations: usize,
     pub input: StfInput,
     pub expected: StfPublicValues,
 }
@@ -39,6 +41,8 @@ pub async fn fetch_transition(
 
     Ok(ReplayInput {
         id: block_id.to_string(),
+        slot: block.slot,
+        attestations: block.body.attestations.len(),
         input: StfInput::new(state, block),
         expected,
     })
