@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 pub use ethlambda_types::stf::{StfInput, StfPublicValues};
 
 /// A serialized proof of a single state transition.
@@ -25,8 +27,7 @@ impl From<Vec<u8>> for Proof {
 /// Proves and verifies state-transition executions on a zkVM backend.
 ///
 /// The methods are `async` because real backends (SP1, RISC0, …) drive an
-/// async prover client. This makes the trait non–object-safe, so consumers
-/// select a backend by concrete type rather than `Box<dyn StfProver>`.
+/// async prover client.
 ///
 /// `async_fn_in_trait` is allowed deliberately: we don't constrain the returned
 /// futures to `Send`, since backend prover clients don't all guarantee it.
@@ -41,6 +42,33 @@ pub trait StfProver {
 
     /// Execute the guest program, without generating the proof.
     async fn execute(&self, input: &StfInput) -> Result<StfPublicValues, ProverError>;
+
+    /// [`Self::execute`] plus the wall-clock duration it took.
+    async fn execute_timed(
+        &self,
+        input: &StfInput,
+    ) -> Result<(StfPublicValues, Duration), ProverError> {
+        let start = Instant::now();
+        let public_values = self.execute(input).await?;
+        Ok((public_values, start.elapsed()))
+    }
+
+    /// [`Self::prove`] plus the wall-clock duration it took.
+    async fn prove_timed(&self, input: &StfInput) -> Result<(Proof, Duration), ProverError> {
+        let start = Instant::now();
+        let proof = self.prove(input).await?;
+        Ok((proof, start.elapsed()))
+    }
+
+    /// [`Self::verify`] plus the wall-clock duration it took.
+    async fn verify_timed(
+        &self,
+        proof: &Proof,
+    ) -> Result<(StfPublicValues, Duration), ProverError> {
+        let start = Instant::now();
+        let public_values = self.verify(proof).await?;
+        Ok((public_values, start.elapsed()))
+    }
 }
 
 /// Errors raised while proving or verifying a state transition.
